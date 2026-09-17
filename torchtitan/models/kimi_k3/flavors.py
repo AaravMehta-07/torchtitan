@@ -33,6 +33,10 @@ from torchtitan.models.common import (
 )
 from torchtitan.models.common.attention import FlexInnerAttention
 from torchtitan.models.common.attention.kda import InnerKDA, KDA, KDAKernel
+from torchtitan.models.common.attention.mla import (
+    MLAFlexInnerAttention,
+    MLAVarlenInnerAttention,
+)
 from torchtitan.models.common.config_utils import (
     get_attention_config,
     make_ffn_config,
@@ -40,7 +44,7 @@ from torchtitan.models.common.config_utils import (
     make_shared_expert_ffn_config,
 )
 from torchtitan.models.common.decoder_sharding import (
-    inner_attention_local_spmd_sharding_config,
+    mla_inner_attention_local_spmd_sharding_config,
     lm_head_sharding_config,
     norm_sharding_config,
     pre_lm_head_norm_sharding_config,
@@ -78,12 +82,8 @@ from torchtitan.models.kimi_k2_7.sharding import (
     moonvit_rotary_sharding_config,
 )
 from torchtitan.models.kimi_k2_7.vision_encoder import VisionRotaryEmbedding2D
-from .model import (
-    AttentionResidual,
-    KimiK3Model,
-    KimiK3TransformerBlock,
-    KimiMLAAttention,
-)
+from .attention import KimiMLAAttention
+from .model import AttentionResidual, KimiK3Model, KimiK3TransformerBlock
 from .moe import KimiLatentMoE
 from .sharding import (
     inner_kda_sharding_config,
@@ -231,8 +231,12 @@ def _mla_config(
     """Low-rank projections and norms stay replicated; up-projections and the
     gate are column-parallel; ``wo`` is row-parallel to the residual layout."""
     inner_attention = replace(
-        get_attention_config(attn_backend),
-        sharding_config=inner_attention_local_spmd_sharding_config(),
+        get_attention_config(
+            attn_backend,
+            flex_attention=MLAFlexInnerAttention,
+            varlen_attention=MLAVarlenInnerAttention,
+        ),
+        sharding_config=mla_inner_attention_local_spmd_sharding_config(),
     )
 
     q_head_dim = qk_nope_head_dim + qk_rope_head_dim

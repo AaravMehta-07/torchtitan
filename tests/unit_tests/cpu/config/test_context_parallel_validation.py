@@ -13,7 +13,7 @@ from unittest import mock
 from torchtitan.config.transform import ContextParallelTransform
 from torchtitan.distributed.context_parallel import ContextParallelLoadBalancer
 from torchtitan.models.base.module import Module
-from torchtitan.models.common.attention import FlexInnerAttention
+from torchtitan.models.common.attention import FlexInnerAttention, MLAFlexInnerAttention
 
 
 class TestDecoderConfigCpValidation(unittest.TestCase):
@@ -302,8 +302,8 @@ class TestShippedCpRecipes(unittest.TestCase):
 
     def test_allows_mtp_cp(self):
         from torchtitan.config.transform import apply_transforms
-        from torchtitan.models.common.attention.cp_attention import (
-            KVAllGatherCPFlexInnerAttention,
+        from torchtitan.models.common.attention.cp_mla import (
+            KVAllGatherCPMLAFlexInnerAttention,
         )
         from torchtitan_recipes.tests.models.deepseek_v3 import (
             deepseek_v3_debugmodel_mtp,
@@ -316,7 +316,7 @@ class TestShippedCpRecipes(unittest.TestCase):
             [
                 ContextParallelTransform(
                     inner_attention_map={
-                        FlexInnerAttention: KVAllGatherCPFlexInnerAttention
+                        MLAFlexInnerAttention: KVAllGatherCPMLAFlexInnerAttention
                     }
                 )
             ],

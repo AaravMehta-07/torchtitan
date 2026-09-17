@@ -33,6 +33,10 @@ from torchtitan.models.common import (
     TransformerBlock,
     UnaryActivationFn,
 )
+from torchtitan.models.common.attention import (
+    MLAFlexInnerAttention,
+    MLAVarlenInnerAttention,
+)
 from torchtitan.models.common.config_utils import (
     get_attention_config,
     make_ffn_config,
@@ -42,7 +46,7 @@ from torchtitan.models.common.config_utils import (
     make_shared_expert_ffn_config,
 )
 from torchtitan.models.common.decoder_sharding import (
-    inner_attention_local_spmd_sharding_config,
+    mla_inner_attention_local_spmd_sharding_config,
     lm_head_sharding_config,
     norm_sharding_config,
     pre_lm_head_norm_sharding_config,
@@ -60,7 +64,8 @@ from torchtitan.models.common.moe.sharding import (
 )
 from torchtitan.models.common.param_init import depth_scaled_std
 
-from .model import DeepSeekMLAAttention, DeepSeekV3Model, DeepSeekV3TransformerBlock
+from .attention import DeepSeekMLAAttention
+from .model import DeepSeekV3Model, DeepSeekV3TransformerBlock
 from .moe import DeepSeekV3Router
 from .mtp import MTPDecoder, MTPLoss, MTPTransformerBlock
 from .sharding import (
@@ -144,6 +149,14 @@ def make_deepseek_v3_router_config(
     )
 
 
+def _get_mla_attention_config(attn_backend: str) -> Module.Config:
+    return get_attention_config(
+        attn_backend,
+        flex_attention=MLAFlexInnerAttention,
+        varlen_attention=MLAVarlenInnerAttention,
+    )
+
+
 def make_mla_attention_config(
     *,
     layer_id: int,
@@ -160,10 +173,12 @@ def make_mla_attention_config(
     norm_init: dict[str, Callable],
     depth_init: Callable[[int], dict[str, Callable]],
     rope: RoPE.Config,
-    attention_config_factory: Callable[[str], Module.Config] = get_attention_config,
+    attention_config_factory: Callable[
+        [str], Module.Config
+    ] = _get_mla_attention_config,
     enable_sp: bool,
 ) -> DeepSeekMLAAttention.Config:
-    """Build a fully-specified, sharded DeepSeek V3 MLA ``DeepSeekMLAAttention.Config``.
+    """Build a fully-specified ``DeepSeekMLAAttention.Config``.
 
     All Linear and RMSNorm sub-configs have their dimensional fields set. When
     ``q_lora_rank == 0``, sets ``wq`` (not ``wq_a``/``wq_b``); when
@@ -175,7 +190,7 @@ def make_mla_attention_config(
     """
     inner_attention = dataclasses.replace(
         attention_config_factory(attn_backend),
-        sharding_config=inner_attention_local_spmd_sharding_config(),
+        sharding_config=mla_inner_attention_local_spmd_sharding_config(),
     )
     qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
 
@@ -284,7 +299,9 @@ def build_mla_moe_layers(
     depth_init: Callable[[int], dict[str, Callable]],
     depth_experts_init: Callable[[int], dict[str, Callable]],
     rope: RoPE.Config,
-    attention_config_factory: Callable[[str], Module.Config] = get_attention_config,
+    attention_config_factory: Callable[
+        [str], Module.Config
+    ] = _get_mla_attention_config,
     router_config_factory: Callable[
         ..., TokenChoiceTopKRouter.Config
     ] = make_router_config,

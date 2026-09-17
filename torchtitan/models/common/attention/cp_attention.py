@@ -33,6 +33,7 @@ from .attention import (
 )
 
 __all__ = [
+    "all_gather_cp_tensors",
     "CPInnerAttention",
     "KVAllGatherCPFlexInnerAttention",
     "KVAllGatherCPSlidingWindowFlexInnerAttention",
@@ -47,6 +48,27 @@ _HEAD_DIM = 1
 
 _GlobalAttentionMetadataT = TypeVar("_GlobalAttentionMetadataT")
 _LocalAttentionMetadataT = TypeVar("_LocalAttentionMetadataT")
+
+
+def all_gather_cp_tensors(
+    tensors: tuple[torch.Tensor, ...],
+    *,
+    reduce_dtype: torch.dtype,
+) -> tuple[torch.Tensor, ...]:
+    """All-gather token-sharded tensors across the CP mesh axis."""
+    cp_group = spmd_mesh_group(MeshAxisName.CP)
+    if cp_group is None:
+        raise RuntimeError("CP attention requires an active multi-rank CP mesh axis.")
+    return tuple(
+        spmd.redistribute(
+            tensor,
+            cp_group,
+            src=spmd.S(_TOKEN_DIM),
+            dst=spmd.R,
+            backward_options={"op_dtype": reduce_dtype},
+        )
+        for tensor in tensors
+    )
 
 
 class CPInnerAttention(
@@ -205,20 +227,8 @@ class _KVAllGatherCPFlexBase(
         v_THV: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        cp_group = spmd_mesh_group(MeshAxisName.CP)
-        if cp_group is None:
-            raise RuntimeError(
-                "CP attention requires an active multi-rank CP mesh axis."
-            )
-        k_THK, v_THV = (
-            spmd.redistribute(
-                x,
-                cp_group,
-                src=spmd.S(_TOKEN_DIM),
-                dst=spmd.R,
-                backward_options={"op_dtype": self.reduce_dtype},
-            )
-            for x in (k_THK, v_THV)
+        k_THK, v_THV = all_gather_cp_tensors(
+            (k_THK, v_THV), reduce_dtype=self.reduce_dtype
         )
         assert isinstance(self, FlexInnerAttention)
         return FlexInnerAttention.forward(self, q_THK, k_THK, v_THV, **kwargs)

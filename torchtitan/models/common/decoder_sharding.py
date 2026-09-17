@@ -289,6 +289,23 @@ def inner_attention_local_spmd_sharding_config() -> ShardingConfig:
     )
 
 
+def mla_inner_attention_local_spmd_sharding_config() -> ShardingConfig:
+    """Localize compact MLA inputs without changing their placements."""
+    headed = attention_activation_placement()
+    shared_key = dense_activation_placement(tp=spmd.R, cp=spmd.S(0))
+    inputs = {
+        "q_THK": headed,
+        "kv_THP": headed,
+        "k_shared_TR": shared_key,
+    }
+    return ShardingConfig(
+        in_src_shardings=inputs,
+        in_dst_shardings=inputs,
+        out_src_shardings=headed,
+        local_spmd=True,
+    )
+
+
 def feed_forward_sharding_config(*, enable_sp: bool) -> ShardingConfig:
     """Dense FFN boundary: ``x`` in and out in the residual layout."""
     layout = residual_activation_placement(enable_sp=enable_sp)

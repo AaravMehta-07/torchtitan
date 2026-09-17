@@ -1831,11 +1831,14 @@ class TestTraceModels(unittest.TestCase):
             FlexInnerAttention,
             get_causal_mask_mod,
             get_document_mask_mod,
+            MLAFlexInnerAttention,
         )
         from torchtitan.models.common.linear import Linear
         from torchtitan.models.common.nn_modules import RMSNorm
         from torchtitan.models.common.rope import ComplexRoPE
-        from torchtitan.models.deepseek_v3.model import DeepSeekMLAAttention
+        from torchtitan.models.deepseek_v3.attention import (
+            DeepSeekMLAAttention,
+        )
 
         dim = 64
         n_heads = 4
@@ -1867,7 +1870,7 @@ class TestTraceModels(unittest.TestCase):
                     ),
                     q_norm=RMSNorm.Config(normalized_shape=1),
                     kv_norm=RMSNorm.Config(normalized_shape=kv_lora_rank),
-                    inner_attention=FlexInnerAttention.Config(),
+                    inner_attention=MLAFlexInnerAttention.Config(),
                     wq=Linear.Config(
                         in_features=dim,
                         out_features=n_heads * qk_head_dim,

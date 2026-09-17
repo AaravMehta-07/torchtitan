@@ -20,7 +20,8 @@ from torch.testing._internal.common_utils import (
 from torchtitan.config import apply_overrides, OverrideConfig
 from torchtitan.models.common.attention import FlexInnerAttention
 from torchtitan.models.common.rope import ComplexRoPE
-from torchtitan.models.deepseek_v3.model import DeepSeekMLAAttention, DeepSeekV3Model
+from torchtitan.models.deepseek_v3.attention import DeepSeekMLAAttention
+from torchtitan.models.deepseek_v3.model import DeepSeekV3Model
 from torchtitan_recipes.overrides.fused_mla import (
     _fused_k_rope_kernel,
     _fused_kv_backward_kernel,
@@ -490,7 +491,7 @@ class TestFusedMLANumerics(unittest.TestCase):
 
     @parametrize("dtype", [torch.bfloat16, torch.float32])
     def test_attention_module_forward_backward_matches_eager(self, dtype: torch.dtype):
-        """The override is numerically a drop-in replacement for DeepSeekMLAAttention."""
+        """The override is numerically a drop-in replacement for DeepSeek MLA."""
         self._check_attention_module_forward_backward(dtype)
 
     def _check_attention_module_forward_backward(self, dtype: torch.dtype) -> None:

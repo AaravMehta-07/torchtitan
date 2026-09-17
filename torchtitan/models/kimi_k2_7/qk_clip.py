@@ -17,19 +17,19 @@ from torch.nn.attention.flex_attention import AuxRequest
 
 from torchtitan.components.optim import OptimizersContainer
 from torchtitan.distributed import ParallelismContext
-from torchtitan.models.common.attention import FlexInnerAttention
-from torchtitan.models.deepseek_v3.model import DeepSeekMLAAttention
+from torchtitan.models.common.attention import MLAFlexInnerAttention
+from torchtitan.models.deepseek_v3.attention import DeepSeekMLAAttention
 
 # Shape suffixes:
 # T = packed tokens, H = attention heads, D = projection rows per head,
 # I = input features.
 
 
-class QKClipFlexInnerAttention(FlexInnerAttention):
+class QKClipFlexInnerAttention(MLAFlexInnerAttention):
     """FlexInnerAttention that records the maximum score for each query head."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(FlexInnerAttention.Config):
+    class Config(MLAFlexInnerAttention.Config):
         pass
 
     def __init__(self, config: Config) -> None:

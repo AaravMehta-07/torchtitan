@@ -9,10 +9,16 @@ import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FSDPModule, fully_shard
+
+from unittest import mock
+
+import torch
+
 from torchtitan.config.parallelism import ParallelismConfig
-from torchtitan.models.kimi_k3 import build_model_config as build_kimi_config
+from torchtitan.models.kimi_k3 import build_model_config as build_kimi_k3_config
 from torchtitan.models.qwen3_5 import build_model_config
 from torchtitan.rl.model import vllm_wrapper
+from torchtitan.rl.model.attention import VLLMInnerAttention, VLLMMLAInnerAttention
 from torchtitan.rl.model.vllm_wrapper import (
     _replace_vllm_layer_configs,
     VLLMModelWrapper,
@@ -20,7 +26,7 @@ from torchtitan.rl.model.vllm_wrapper import (
 
 
 @pytest.mark.parametrize(
-    "build_config", [build_model_config, build_kimi_config], ids=["gdn", "kda"]
+    "build_config", [build_model_config, build_kimi_k3_config], ids=["gdn", "kda"]
 )
 def test_vllm_replacement_preserves_attention_sharding(build_config) -> None:
     """Pass the trainer attention's sharding config through unchanged."""
@@ -132,3 +138,45 @@ def test_load_state_dict_allocates_one_fsdp_group_at_a_time(
             assert param.equal(new_state_dict[name].to_local()), name
     finally:
         dist.destroy_process_group()
+
+def test_vllm_replaces_mla_with_compact_input_adapter():
+    model_config = build_kimi_k3_config(
+        "debugmodel", parallelism=ParallelismConfig(), attn_backend="varlen", seq_len=128
+    )
+
+    vllm_config = _replace_vllm_layer_configs(model_config)
+
+    for layer in vllm_config.layers:
+        if layer.attention is not None:
+            assert isinstance(
+                layer.attention.inner_attention,
+                VLLMMLAInnerAttention.Config,
+            )
+
+
+def test_vllm_mla_adapter_materializes_kv():
+    q_THK = torch.randn(8, 4, 6)
+    kv_THP = torch.randn(8, 4, 7)
+    k_shared_TR = torch.randn(8, 2)
+    expected_k_THK = torch.cat(
+        (kv_THP[..., :4], k_shared_TR.unsqueeze(1).expand(-1, 4, -1)), dim=-1
+    )
+    expected_v_THV = kv_THP[..., 4:]
+    out_THV = torch.randn(8, 4, 3)
+    attention = VLLMMLAInnerAttention.__new__(VLLMMLAInnerAttention)
+    torch.nn.Module.__init__(attention)
+
+    with mock.patch.object(
+        VLLMInnerAttention,
+        "forward",
+        autospec=True,
+        return_value=out_THV,
+    ) as vllm_forward:
+        result = attention.forward(q_THK, kv_THP, k_shared_TR)
+
+    assert result is out_THV
+    args = vllm_forward.call_args.args
+    assert args[0] is attention
+    assert args[1] is q_THK
+    torch.testing.assert_close(args[2], expected_k_THK)
+    torch.testing.assert_close(args[3], expected_v_THV)

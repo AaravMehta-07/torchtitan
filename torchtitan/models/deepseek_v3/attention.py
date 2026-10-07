@@ -93,9 +93,7 @@ class DeepSeekMLAAttention(BaseAttention):
             mscale = 0.1 * config.mscale * math.log(config.rope.rope_factor) + 1.0
             self.softmax_scale = self.softmax_scale * mscale * mscale
 
-        inner_attention = config.inner_attention.build()
-        assert isinstance(inner_attention, MLAInnerAttention)
-        self.inner_attention = inner_attention
+        self.inner_attention = config.inner_attention.build()
         self.rope = config.rope.build()
 
     def forward(

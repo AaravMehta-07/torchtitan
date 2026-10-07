@@ -10,6 +10,9 @@ import torch
 import torch.nn as nn
 
 from torchtitan.config.parallelism import ParallelismConfig
+from torchtitan.models.common.attention import (
+    materialize_mla_kv,
+)
 from torchtitan.models.deepseek_v3 import (
     build_model_config as build_deepseek_v3_model_config,
     MODEL_FLAVORS as DEEPSEEK_V3_MODEL_FLAVORS,
@@ -33,6 +36,12 @@ class _AttentionOutput(nn.Module):
             )
             out_THV = out_transform(out_THV, lse_TH)
         return out_THV
+
+
+class _MLAAttentionOutput(_AttentionOutput):
+    def forward(self, q_THK, kv_THP, k_shared_TR, **kwargs):
+        k_THK, v_THV = materialize_mla_kv(q_THK, kv_THP, k_shared_TR)
+        return super().forward(q_THK, k_THK, v_THV, **kwargs)
 
 
 class TestModelTDLayout(unittest.TestCase):
@@ -62,7 +71,7 @@ class TestModelTDLayout(unittest.TestCase):
             parallelism=ParallelismConfig(),
         )
         attention = config.layers[0].attention.build()
-        attention.inner_attention = _AttentionOutput()
+        attention.inner_attention = _MLAAttentionOutput()
         x_TD = torch.randn(8, config.dim)
         positions_T = torch.arange(8)
 

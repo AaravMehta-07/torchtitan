@@ -535,7 +535,7 @@ class TestTransformModel(unittest.TestCase):
 
         ContextParallelTransform(
             inner_attention_map={
-                FlexInnerAttention: KVAllGatherCPFlexInnerAttention,
+                MLAFlexInnerAttention: KVAllGatherCPMLAFlexInnerAttention,
                 InnerKDA: ContextParallelInnerKDA,
             }
         ).transform(model)
@@ -548,7 +548,7 @@ class TestTransformModel(unittest.TestCase):
         for layer in model.layers:
             self.assertIsInstance(
                 layer.attention.inner_attention,
-                KVAllGatherCPFlexInnerAttention.Config
+                KVAllGatherCPMLAFlexInnerAttention.Config
                 if isinstance(layer.attention, BaseAttention.Config)
                 else ContextParallelInnerKDA.Config,
             )

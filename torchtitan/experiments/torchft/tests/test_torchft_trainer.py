@@ -29,7 +29,7 @@ def test_decoder_accepts_wrapped_transformer_blocks() -> None:
     class WrappedBlock(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.attention = SimpleNamespace(inner_attention=torch.nn.Identity())
+            self.attention = SimpleNamespace(attention_backend=torch.nn.Identity())
             self.attention_metadata: object | None = None
 
         def forward(

@@ -11,7 +11,6 @@ import torch
 import torch_remat as remat
 from torch import nn
 
-from torchtitan.models.base.module import Module
 from torchtitan.models.common.attention import (
     FlexAttentionMetadata,
     VarlenAttentionMetadata,

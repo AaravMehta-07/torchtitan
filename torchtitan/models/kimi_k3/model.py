@@ -31,11 +31,7 @@ from torchtitan.models.common import FeedForward, Linear
 from torchtitan.models.common.attention import (
     AttentionMetadata,
     AttentionMetadataMap,
-    BaseAttention,
-    FlexAttentionMetadata,
     LinearAttentionMetadata,
-    local_head_split,
-    VarlenAttentionMetadata,
 )
 from torchtitan.models.common.attention.kda import KDA
 from torchtitan.models.common.decoder import Decoder
@@ -513,11 +509,15 @@ class KimiK3Model(MultimodalModel):
             )
         for layer in self.layers.values():
             block = cast(KimiK3TransformerBlock, layer)
+            if isinstance(block.attention, KimiMLAAttention):
+                inner_attention = block.attention.attention_backend
+            else:
+                inner_attention = block.attention.inner_attention
             h_TD, block_residual_TND = block(
                 h_TD,
                 block_residual_TND,
                 (
-                    attention_metadata[type(block.attention.inner_attention)]
+                    attention_metadata[type(inner_attention)]
                     if attention_metadata is not None
                     else None
                 ),

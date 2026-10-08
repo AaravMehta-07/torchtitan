@@ -289,14 +289,14 @@ def inner_attention_local_spmd_sharding_config() -> ShardingConfig:
     )
 
 
-def mla_inner_attention_local_spmd_sharding_config() -> ShardingConfig:
+def mla_attention_local_spmd_sharding_config() -> ShardingConfig:
     """Localize compact MLA inputs without changing their placements."""
     head_placement = attention_activation_placement()
-    shared_key_placement = dense_activation_placement(tp=spmd.R, cp=spmd.S(0))
+    headless_placement = dense_activation_placement(tp=spmd.R, cp=spmd.S(0))
     inputs = {
         "q_THK": head_placement,
-        "kv_THP": head_placement,
-        "k_shared_TR": shared_key_placement,
+        "kv_c_normed_TL": headless_placement,
+        "k_shared_TR": headless_placement,
     }
     return ShardingConfig(
         in_src_shardings=inputs,

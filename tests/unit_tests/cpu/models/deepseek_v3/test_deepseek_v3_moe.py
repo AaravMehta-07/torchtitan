@@ -14,8 +14,9 @@ from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.config.transform import AsyncTensorParallelTransform
 from torchtitan.models.common.activation import Sigmoid
 from torchtitan.models.common.attention import (
-    MLAFlexInnerAttention,
-    MLAVarlenInnerAttention,
+    FlexInnerAttention,
+    MLAAttention,
+    VarlenInnerAttention,
 )
 from torchtitan.models.common.linear import ColumnParallelLinear, RowParallelLinear
 
@@ -27,18 +28,31 @@ from torchtitan.models.deepseek_v3.mtp import MTPTransformerBlock
 
 
 class TestDeepSeekV3Router(unittest.TestCase):
-    def test_attention_uses_compact_mla_inner_attention(self):
-        build_config, _ = MODEL_FLAVORS["debugmodel"]
-        flex_config = build_config(attn_backend="flex", seq_len=128)
-        varlen_config = build_config(attn_backend="varlen", seq_len=128)
+    def test_attention_uses_compact_mla_attention(self):
+        flex_config = build_model_config(
+            "debugmodel",
+            parallelism=ParallelismConfig(),
+            attn_backend="flex",
+            seq_len=128,
+        )
+        varlen_config = build_model_config(
+            "debugmodel",
+            parallelism=ParallelismConfig(),
+            attn_backend="varlen",
+            seq_len=128,
+        )
 
         self.assertIsInstance(
-            flex_config.layers[0].attention.inner_attention,
-            MLAFlexInnerAttention.Config,
+            flex_config.layers[0].attention.mla_attention,
+            MLAAttention.Config,
         )
         self.assertIsInstance(
-            varlen_config.layers[0].attention.inner_attention,
-            MLAVarlenInnerAttention.Config,
+            flex_config.layers[0].attention.mla_attention.inner_attention,
+            FlexInnerAttention.Config,
+        )
+        self.assertIsInstance(
+            varlen_config.layers[0].attention.mla_attention.inner_attention,
+            VarlenInnerAttention.Config,
         )
 
     def test_mtp_valid_mask_is_explicitly_sharded(self):

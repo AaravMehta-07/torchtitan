@@ -189,7 +189,7 @@ def _trace_dsv3_moe_block_stage(
         block = model.layers["1"]
         if not block.moe_enabled:
             raise AssertionError("DeepSeek V3 debug layer 1 must be a MoE layer")
-        inner_attention_type = type(block.attention.inner_attention)
+        inner_attention_type = type(block.attention.attention_backend)
         if fsdp_mesh is not None:
             block = data_parallel(
                 block,

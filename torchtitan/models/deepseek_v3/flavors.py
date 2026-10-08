@@ -34,8 +34,10 @@ from torchtitan.models.common import (
     UnaryActivationFn,
 )
 from torchtitan.models.common.attention import (
-    MLAFlexInnerAttention,
-    MLAVarlenInnerAttention,
+    FlexInnerAttention,
+    InnerAttention,
+    MLAAttention,
+    VarlenInnerAttention,
 )
 from torchtitan.models.common.config_utils import (
     get_attention_config,
@@ -46,8 +48,8 @@ from torchtitan.models.common.config_utils import (
     make_shared_expert_ffn_config,
 )
 from torchtitan.models.common.decoder_sharding import (
-    mla_inner_attention_local_spmd_sharding_config,
     lm_head_sharding_config,
+    mla_attention_local_spmd_sharding_config,
     norm_sharding_config,
     pre_lm_head_norm_sharding_config,
     replicated_input_colwise_sharding_config,
@@ -149,11 +151,21 @@ def make_deepseek_v3_router_config(
     )
 
 
-def _get_mla_attention_config(attn_backend: str) -> Module.Config:
-    return get_attention_config(
+def _get_mla_attention_config(
+    attn_backend: str,
+    *,
+    config_kwargs: dict,
+) -> Module.Config:
+    inner_attention = get_attention_config(
         attn_backend,
-        flex_attention=MLAFlexInnerAttention,
-        varlen_attention=MLAVarlenInnerAttention,
+        flex_attention=FlexInnerAttention,
+        varlen_attention=VarlenInnerAttention,
+    )
+    assert isinstance(inner_attention, InnerAttention.Config)
+    return MLAAttention.Config(
+        wkv_b=config_kwargs["wkv_b"],
+        packed_kv_head_dim=config_kwargs["packed_kv_head_dim"],
+        inner_attention=inner_attention,
     )
 
 
@@ -173,12 +185,10 @@ def make_mla_attention_config(
     norm_init: dict[str, Callable],
     depth_init: Callable[[int], dict[str, Callable]],
     rope: RoPE.Config,
-    attention_config_factory: Callable[
-        [str], Module.Config
-    ] = _get_mla_attention_config,
+    attention_config_factory: Callable[..., Module.Config] = _get_mla_attention_config,
     enable_sp: bool,
 ) -> DeepSeekMLAAttention.Config:
-    """Build a fully-specified ``DeepSeekMLAAttention.Config``.
+    """Build a fully-specified, sharded ``DeepSeekMLAAttention.Config``.
 
     All Linear and RMSNorm sub-configs have their dimensional fields set. When
     ``q_lora_rank == 0``, sets ``wq`` (not ``wq_a``/``wq_b``); when
@@ -188,11 +198,24 @@ def make_mla_attention_config(
     weights on TP; up-projections are column-parallel and ``wo`` is
     row-parallel back to the residual layout selected by ``enable_sp``.
     """
-    inner_attention = dataclasses.replace(
-        attention_config_factory(attn_backend),
-        sharding_config=mla_inner_attention_local_spmd_sharding_config(),
-    )
     qk_head_dim = qk_nope_head_dim + qk_rope_head_dim
+    wkv_b = Linear.Config(
+        in_features=kv_lora_rank,
+        out_features=n_heads * (qk_nope_head_dim + v_head_dim),
+        param_init=linear_init,
+        sharding_config=replicated_input_colwise_sharding_config(),
+    )
+    inner_attention = dataclasses.replace(
+        attention_config_factory(
+            attn_backend,
+            config_kwargs={
+                "wkv_b": wkv_b,
+                "packed_kv_head_dim": qk_nope_head_dim + v_head_dim,
+            },
+        ),
+        sharding_config=mla_attention_local_spmd_sharding_config(),
+    )
+    assert isinstance(inner_attention, MLAAttention.Config)
 
     if q_lora_rank == 0:
         wq = Linear.Config(
@@ -252,12 +275,6 @@ def make_mla_attention_config(
             param_init=norm_init,
             sharding_config=replicated_state_sharding_config("weight"),
         ),
-        wkv_b=Linear.Config(
-            in_features=kv_lora_rank,
-            out_features=n_heads * (qk_nope_head_dim + v_head_dim),
-            param_init=linear_init,
-            sharding_config=replicated_input_colwise_sharding_config(),
-        ),
         wo=RowParallelLinear.Config(
             in_features=n_heads * v_head_dim,
             out_features=dim,
@@ -266,7 +283,7 @@ def make_mla_attention_config(
                 output_layout=residual_activation_placement(enable_sp=enable_sp)
             ),
         ),
-        inner_attention=inner_attention,
+        mla_attention=inner_attention,
         rope=dataclasses.replace(rope, sharding_config=rope_cache_sharding_config()),
         sharding_config=mla_attention_sharding_config(enable_sp=enable_sp),
     )
@@ -299,9 +316,7 @@ def build_mla_moe_layers(
     depth_init: Callable[[int], dict[str, Callable]],
     depth_experts_init: Callable[[int], dict[str, Callable]],
     rope: RoPE.Config,
-    attention_config_factory: Callable[
-        [str], Module.Config
-    ] = _get_mla_attention_config,
+    attention_config_factory: Callable[..., Module.Config] = _get_mla_attention_config,
     router_config_factory: Callable[
         ..., TokenChoiceTopKRouter.Config
     ] = make_router_config,

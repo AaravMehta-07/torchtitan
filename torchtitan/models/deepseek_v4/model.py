@@ -310,7 +310,7 @@ class DeepSeekV4Model(Decoder):
                 None
                 if attention_metadata is None
                 else attention_metadata.get(
-                    type(cast(TransformerBlock, layer).attention.inner_attention)
+                    type(cast(TransformerBlock, layer).attention.attention_backend)
                 )
             )
             h = layer(
@@ -367,7 +367,7 @@ class DeepSeekV4Model(Decoder):
                 None
                 if attention_metadata is None
                 else attention_metadata.get(
-                    type(cast(TransformerBlock, mtp_block).attention.inner_attention)
+                    type(cast(TransformerBlock, mtp_block).attention.attention_backend)
                 )
             )
             with spmd.no_typecheck():

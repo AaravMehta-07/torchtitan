@@ -27,8 +27,9 @@ from torchtitan.components.renderer import from_renderers
 from torchtitan.config import DebugConfig, OverrideConfig, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.config.transform import (
+    apply_transforms,
     BatchInvariantFlexConverter,
-    LMHeadFP32OutputConverter,
+    LMHeadFP32OutputTransform,
     ModelConfigConverter,
     MXFP8LinearConverter,
 )
@@ -81,10 +82,10 @@ def _qwen3_rl_model_configs(
     generator_parallelism: InferenceParallelismConfig,
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> tuple[Decoder.Config, Decoder.Config]:
-    """Qwen3 ``(trainer, generator)`` model configs for RL, with fp32 lm_head logits.
+    """Build the Qwen3 model configs for each RL role's parallelism.
 
-    RL logprob / KL math needs the lm_head logits in fp32, so every RL config
-    runs ``LMHeadFP32OutputConverter`` on top of whatever converters it passes.
+    RL logprob / KL math needs fp32 lm_head logits, so recipes apply
+    ``LMHeadFP32OutputTransform`` to both roles after setting their options.
     """
     return build_rl_model_configs(
         build_model_config,
@@ -93,12 +94,12 @@ def _qwen3_rl_model_configs(
         generator_parallelism=generator_parallelism,
         seq_len=seq_len,
         attn_backend=attn_backend,
-        converters=[*(converters or []), LMHeadFP32OutputConverter.Config()],
+        converters=converters,
     )
 
 
-def rl_grpo_qwen3_0_6b_varlen(*, seq_len: int = 2048) -> Controller.Config:
-    """GRPO training config for Qwen3-0.6B (6 GPUs: 4 gen + 2 train)."""
+def _qwen3_0_6b_varlen_config(*, seq_len: int = 2048) -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=1,
@@ -168,15 +169,24 @@ def rl_grpo_qwen3_0_6b_varlen(*, seq_len: int = 2048) -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_0_6b_varlen(*, seq_len: int = 2048) -> Controller.Config:
+    """GRPO training config for Qwen3-0.6B (6 GPUs: 4 gen + 2 train)."""
+    config = _qwen3_0_6b_varlen_config(seq_len=seq_len)
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_0_6b_varlen_no_compile(*, seq_len: int = 2048) -> Controller.Config:
     config = rl_grpo_qwen3_0_6b_varlen(seq_len=seq_len)
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
     for model_config in (config.trainer.model, config.generator.model):
         model_config.local_compile_regions = []
     return config
 
 
-def rl_grpo_qwen3_0_6b_flex() -> Controller.Config:
-    """GRPO training config for Qwen3-0.6B with flex attention (4 GPUs: 2 gen + 2 train)."""
+def _qwen3_0_6b_flex_config() -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     seq_len = 2048
     trainer_parallelism = ParallelismConfig(
@@ -248,14 +258,24 @@ def rl_grpo_qwen3_0_6b_flex() -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_0_6b_flex() -> Controller.Config:
+    """GRPO training config for Qwen3-0.6B with flex attention (4 GPUs: 2 gen + 2 train)."""
+    config = _qwen3_0_6b_flex_config()
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_0_6b_varlen_mxfp8() -> Controller.Config:
     """Qwen3-0.6B GRPO with FSDP-managed MXFP8 inference weights."""
-    config = rl_grpo_qwen3_0_6b_varlen()
-    # TODO: Allow LMHeadCastConverter and QuantizationConverter to
-    # co-exist, since they target different layers
+    config = _qwen3_0_6b_varlen_config()
+    # MXFP8 targets layers.* and the FP32 transform targets lm_head, so they
+    # are compatible because they modify different modules.
     converter = MXFP8LinearConverter.Config(fqns=["layers."]).build()
     config.trainer.model = converter.convert(config.trainer.model)
     config.generator.model = converter.convert(config.generator.model)
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
     return config
 
 
@@ -267,7 +287,7 @@ def rl_grpo_qwen3_0_6b_flex_batch_invariant() -> Controller.Config:
     (mixed_precision_param="bfloat16", the default) casts them to bf16 for the
     forward (even at data_parallel_shard_degree=1), matching the bf16 generator.
     """
-    config = rl_grpo_qwen3_0_6b_flex()
+    config = _qwen3_0_6b_flex_config()
     # Batch invariance requires strict on-policy: the generator must run the
     # latest weights before generating so trainer/generator logprobs stay
     # bitwise-identical (bit_wise/logprob_diff == 0) every step, not just step 1.
@@ -294,13 +314,16 @@ def rl_grpo_qwen3_0_6b_flex_batch_invariant() -> Controller.Config:
         generator_parallelism=config.generator.parallelism,
         converters=[BatchInvariantFlexConverter.Config()],
     )
-    # Local compile regions do not support batch-invariant mode.
-    for model_config in (config.trainer.model, config.generator.model):
-        model_config.local_compile_regions = []
     block_size = config.trainer.model.layers[0].attention.inner_attention.block_size
     config.async_loop.batcher = dataclasses.replace(
         config.async_loop.batcher, per_sample_pad_multiple=block_size
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
     return config
 
 
@@ -328,11 +351,10 @@ def rl_grpo_gpt_oss_20b_varlen() -> Controller.Config:
         "20b",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/gpt-oss-20b",
         async_loop=AsyncLoopConfig(
             num_training_steps=10,
@@ -387,6 +409,10 @@ def rl_grpo_gpt_oss_20b_varlen() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
 
 def rl_grpo_qwen3_1_7b() -> Controller.Config:
     """GRPO training config for Qwen3-1.7B (6 GPUs: 4 gen + 2 train)."""
@@ -407,7 +433,7 @@ def rl_grpo_qwen3_1_7b() -> Controller.Config:
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3-1.7B",
         async_loop=AsyncLoopConfig(
             num_training_steps=10,
@@ -459,6 +485,10 @@ def rl_grpo_qwen3_1_7b() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
 
 def rl_grpo_qwen3_14b() -> Controller.Config:
     """GRPO training config for Qwen3-14B (16 GPUs: 8 gen + 8 train)."""
@@ -479,7 +509,7 @@ def rl_grpo_qwen3_14b() -> Controller.Config:
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3-14B",
         async_loop=AsyncLoopConfig(
             num_training_steps=10,
@@ -532,6 +562,10 @@ def rl_grpo_qwen3_14b() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
 
 def rl_grpo_qwen3_30b_a3b_varlen() -> Controller.Config:
     """GRPO training config for Qwen3-30B-A3B MoE (8 GPUs: 4 gen + 4 train).
@@ -558,11 +592,10 @@ def rl_grpo_qwen3_30b_a3b_varlen() -> Controller.Config:
         "30B-A3B",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3-30B-A3B",
         async_loop=AsyncLoopConfig(
             num_training_steps=10,
@@ -616,6 +649,10 @@ def rl_grpo_qwen3_30b_a3b_varlen() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
 
 def rl_grpo_qwen3_30b_a3b_varlen_perf() -> Controller.Config:
     """Qwen3-30B-A3B GRPO with throughput overrides (8 GPUs: 4 gen + 4 train).
@@ -668,10 +705,7 @@ def rl_grpo_qwen3_0_6b_varlen_batch_invariant(
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    # Local compile regions do not support batch-invariant mode.
-    for model_config in (trainer_model, generator_model):
-        model_config.local_compile_regions = []
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3-0.6B",
         num_generators=3,
         async_loop=AsyncLoopConfig(
@@ -731,6 +765,14 @@ def rl_grpo_qwen3_0_6b_varlen_batch_invariant(
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
+
 
 def _qwen3_5_rl_model_configs(
     flavor: str,
@@ -741,10 +783,10 @@ def _qwen3_5_rl_model_configs(
     generator_parallelism: InferenceParallelismConfig,
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> tuple[Decoder.Config, Decoder.Config]:
-    """Qwen3.5 ``(trainer, generator)`` model configs for RL, with fp32 lm_head logits.
+    """Build the Qwen3.5 model configs for each RL role's parallelism.
 
-    RL logprob / KL math needs the lm_head logits in fp32, so every RL config
-    runs ``LMHeadFP32OutputConverter`` on top of whatever converters it passes.
+    RL logprob / KL math needs fp32 lm_head logits, so recipes apply
+    ``LMHeadFP32OutputTransform`` to both roles after setting their options.
     """
     return build_rl_model_configs(
         build_qwen3_5_model_config,
@@ -753,12 +795,12 @@ def _qwen3_5_rl_model_configs(
         generator_parallelism=generator_parallelism,
         seq_len=seq_len,
         attn_backend=attn_backend,
-        converters=[*(converters or []), LMHeadFP32OutputConverter.Config()],
+        converters=converters,
     )
 
 
-def rl_grpo_qwen3_5_9b_varlen() -> Controller.Config:
-    """Qwen3.5-9B GRPO with trainer and generator TP=2 (6 GPUs)."""
+def _qwen3_5_9b_varlen_config() -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     seq_len = 2048
     trainer_parallelism = ParallelismConfig(
@@ -832,9 +874,17 @@ def rl_grpo_qwen3_5_9b_varlen() -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_5_9b_varlen() -> Controller.Config:
+    """Qwen3.5-9B GRPO with trainer and generator TP=2 (6 GPUs)."""
+    config = _qwen3_5_9b_varlen_config()
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_5_9b_varlen_batch_invariant() -> Controller.Config:
     """On-policy, batch-invariant Qwen3.5-9B GRPO with matching TP=2."""
-    config = rl_grpo_qwen3_5_9b_varlen()
+    config = _qwen3_5_9b_varlen_config()
     config.async_loop = dataclasses.replace(config.async_loop, target_offpolicy_steps=0)
     config.trainer = dataclasses.replace(
         config.trainer,
@@ -857,7 +907,10 @@ def rl_grpo_qwen3_5_9b_varlen_batch_invariant() -> Controller.Config:
         trainer_parallelism=config.trainer.parallelism,
         generator_parallelism=config.generator.parallelism,
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
     # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
     for model_config in (config.trainer.model, config.generator.model):
         model_config.local_compile_regions = []
     return config
@@ -870,7 +923,7 @@ def rl_grpo_qwen3_6_27b_varlen_perf() -> Controller.Config:
     The 8-GPU layout assigns TP2 x FSDP2 to training and TP4 to generation.
     """
     seq_len = 65536
-    config = rl_grpo_qwen3_5_9b_varlen()
+    config = _qwen3_5_9b_varlen_config()
     config.hf_assets_path = "./assets/hf/Qwen3.6-27B"
     trainer_parallelism = dataclasses.replace(
         config.trainer.parallelism,
@@ -920,4 +973,6 @@ def rl_grpo_qwen3_6_27b_varlen_perf() -> Controller.Config:
     config.generator = dataclasses.replace(
         config.generator, model=generator_model, parallelism=generator_parallelism
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
     return config

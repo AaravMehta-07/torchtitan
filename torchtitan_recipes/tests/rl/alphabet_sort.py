@@ -9,6 +9,10 @@
 These configurations exercise RL code paths in CI with small debug models or
 test-only overrides. They are not recommendations for production training;
 verified recipes live in ``torchtitan_recipes.rl.alphabet_sort``.
+
+RL logprob / KL math needs fp32 lm_head logits, so recipes apply
+``LMHeadFP32OutputTransform`` to both trainer and generator. This preserves
+the vocabulary projection's fp32 output instead of rounding logits to bf16.
 """
 
 import dataclasses
@@ -28,7 +32,7 @@ from torchtitan.config import DebugConfig, OverrideConfig, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.config.transform import (
     apply_transforms,
-    LMHeadFP32OutputConverter,
+    LMHeadFP32OutputTransform,
     ModelConfigConverter,
     TokenDispatcherTransform,
 )
@@ -69,8 +73,8 @@ def rl_grpo_qwen3_0_6b_varlen_checkpoint_test(
     return config
 
 
-def rl_grpo_gpt_oss_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
-    """Small GPT-OSS debug config (random init) to exercise the full RL loop."""
+def _gpt_oss_debug_varlen_config(*, seq_len: int = 2048) -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=1,
@@ -86,7 +90,6 @@ def rl_grpo_gpt_oss_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
         "debugmodel",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
@@ -145,10 +148,19 @@ def rl_grpo_gpt_oss_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
     )
 
 
+def rl_grpo_gpt_oss_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
+    """Small GPT-OSS debug config (random init) to exercise the full RL loop."""
+    config = _gpt_oss_debug_varlen_config(seq_len=seq_len)
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_gpt_oss_debug_varlen_no_compile(
     *, seq_len: int = 2048
 ) -> Controller.Config:
     config = rl_grpo_gpt_oss_debug_varlen(seq_len=seq_len)
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
     for model_config in (config.trainer.model, config.generator.model):
         model_config.local_compile_regions = []
     return config
@@ -183,14 +195,10 @@ def rl_grpo_gpt_oss_debug_varlen_batch_invariant() -> Controller.Config:
         "debugmodel",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    # Local compile regions do not support batch-invariant mode.
-    for model_config in (trainer_model, generator_model):
-        model_config.local_compile_regions = []
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="tests/assets/tokenizer",
         async_loop=AsyncLoopConfig(
             num_training_steps=3,
@@ -255,14 +263,17 @@ def rl_grpo_gpt_oss_debug_varlen_batch_invariant() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
 
-def rl_grpo_qwen3_moe_debug_varlen() -> Controller.Config:
-    """Debug MoE config with EP+TP on generator (8 GPUs: 4 gen + 4 train).
 
-    Trainer uses data_parallel_shard_degree=2 as FSDP degree and TP=2.
-    Generator uses data_parallel_degree=2 (vLLM pure DP), with TP=2.
-    MoE layers use EP=4.
-    """
+def _qwen3_moe_debug_varlen_config() -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     seq_len = 2048
     trainer_parallelism = ParallelismConfig(
@@ -281,7 +292,6 @@ def rl_grpo_qwen3_moe_debug_varlen() -> Controller.Config:
         "debugmodel_moe",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
@@ -340,6 +350,19 @@ def rl_grpo_qwen3_moe_debug_varlen() -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_moe_debug_varlen() -> Controller.Config:
+    """Debug MoE config with EP+TP on generator (8 GPUs: 4 gen + 4 train).
+
+    Trainer uses data_parallel_shard_degree=2 as FSDP degree and TP=2.
+    Generator uses data_parallel_degree=2 (vLLM pure DP), with TP=2.
+    MoE layers use EP=4.
+    """
+    config = _qwen3_moe_debug_varlen_config()
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_moe_debug_deepep() -> Controller.Config:
     """Debug MoE config on the DeepEP v2 backend with a CUDA-graph-capturable generator
     (8 GPUs: 4 gen + 4 train).
@@ -354,7 +377,7 @@ def rl_grpo_qwen3_moe_debug_deepep() -> Controller.Config:
     backward-able DeepEP path, while the generator uses the CUDA-graph-compatible EXPAND
     layout. The ``fused_swiglu`` override applies to both models.
     """
-    config = rl_grpo_qwen3_moe_debug_varlen()
+    config = _qwen3_moe_debug_varlen_config()
     config.override = OverrideConfig(
         imports=["torchtitan_recipes.overrides.fused_swiglu.fused_swiglu"]
     )
@@ -365,6 +388,7 @@ def rl_grpo_qwen3_moe_debug_deepep() -> Controller.Config:
     config.trainer = apply_transforms(
         config.trainer,
         [
+            LMHeadFP32OutputTransform(),
             TokenDispatcherTransform(
                 dispatcher=DeepEPTokenDispatcher,
                 # Each EP rank dispatches one CP x TP shard of a microbatch.
@@ -375,12 +399,13 @@ def rl_grpo_qwen3_moe_debug_deepep() -> Controller.Config:
                         * config.trainer.parallelism.tensor_parallel_degree
                     )
                 ),
-            )
+            ),
         ],
     )
     config.generator = apply_transforms(
         config.generator,
         [
+            LMHeadFP32OutputTransform(),
             TokenDispatcherTransform(
                 dispatcher=DeepEPTokenDispatcher,
                 # vLLM shards each engine step's token budget across TP ranks.
@@ -389,7 +414,7 @@ def rl_grpo_qwen3_moe_debug_deepep() -> Controller.Config:
                     // config.generator.parallelism.tensor_parallel_degree
                 ),
                 kwargs={"cuda_graph_compatible": True},
-            )
+            ),
         ],
     )
     return config
@@ -430,14 +455,10 @@ def rl_grpo_qwen3_moe_debug_varlen_batch_invariant(
         "debugmodel_moe",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    # Local compile regions do not support batch-invariant mode.
-    for model_config in (trainer_model, generator_model):
-        model_config.local_compile_regions = []
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="tests/assets/tokenizer",
         async_loop=AsyncLoopConfig(
             num_training_steps=10,
@@ -497,9 +518,17 @@ def rl_grpo_qwen3_moe_debug_varlen_batch_invariant(
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
 
-def rl_grpo_qwen3_5_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
-    """Random-init Qwen3.5 GRPO config for CI."""
+
+def _qwen3_5_debug_varlen_config(*, seq_len: int = 2048) -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     num_samples_per_prompt = 8
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=2,
@@ -574,11 +603,19 @@ def rl_grpo_qwen3_5_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_5_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
+    """Random-init Qwen3.5 GRPO config for CI."""
+    config = _qwen3_5_debug_varlen_config(seq_len=seq_len)
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_5_debug_varlen_batch_invariant(
     *, seq_len: int = 2048
 ) -> Controller.Config:
     """On-policy, batch-invariant Qwen3.5 GRPO config for CI."""
-    config = rl_grpo_qwen3_5_debug_varlen(seq_len=seq_len)
+    config = _qwen3_5_debug_varlen_config(seq_len=seq_len)
     config.async_loop = dataclasses.replace(config.async_loop, target_offpolicy_steps=0)
     config.trainer = dataclasses.replace(
         config.trainer,
@@ -599,7 +636,10 @@ def rl_grpo_qwen3_5_debug_varlen_batch_invariant(
         trainer_parallelism=config.trainer.parallelism,
         generator_parallelism=config.generator.parallelism,
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
     # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
     for model_config in (config.trainer.model, config.generator.model):
         model_config.local_compile_regions = []
     return config
@@ -614,8 +654,12 @@ def _kimi_k3_rl_model_configs(
     generator_parallelism: InferenceParallelismConfig,
     converters: list[ModelConfigConverter.Config] | None = None,
 ) -> tuple[Decoder.Config, Decoder.Config]:
-    """Kimi K3 ``(trainer, generator)`` model configs for RL, with the lm_head
-    fp32 cast always on and no local compile regions."""
+    """Build Kimi K3 model configs for each RL role, without local compile.
+
+    RL logprob / KL math needs fp32 lm_head logits. Recipes apply
+    ``LMHeadFP32OutputTransform`` to both roles, then clear local compile
+    regions again because the transform adds ``fp32_to_bf16_split``.
+    """
     trainer_model, generator_model = build_rl_model_configs(
         build_kimi_k3_model_config,
         flavor,
@@ -623,15 +667,15 @@ def _kimi_k3_rl_model_configs(
         generator_parallelism=generator_parallelism,
         seq_len=seq_len,
         attn_backend=attn_backend,
-        converters=[*(converters or []), LMHeadFP32OutputConverter.Config()],
+        converters=converters,
     )
     for model_config in (trainer_model, generator_model):
         model_config.local_compile_regions = []
     return trainer_model, generator_model
 
 
-def rl_grpo_kimi_k3_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
-    """Random-init Kimi K3 GRPO config for Blackwell integration testing."""
+def _kimi_k3_debug_varlen_config(*, seq_len: int = 2048) -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=2,
         tensor_parallel_degree=1,
@@ -704,6 +748,17 @@ def rl_grpo_kimi_k3_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
     )
 
 
+def rl_grpo_kimi_k3_debug_varlen(*, seq_len: int = 2048) -> Controller.Config:
+    """Random-init Kimi K3 GRPO config for Blackwell integration testing."""
+    config = _kimi_k3_debug_varlen_config(seq_len=seq_len)
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
+
+
 def _set_kimi_k3_batch_invariant(config: Controller.Config) -> Controller.Config:
     """Enable the shared trainer/generator batch-invariant execution mode."""
     config.async_loop = dataclasses.replace(
@@ -737,7 +792,15 @@ def rl_grpo_kimi_k3_debug_varlen_batch_invariant(
     *, seq_len: int = 2048
 ) -> Controller.Config:
     """On-policy, batch-invariant random-weight Kimi K3 GRPO config."""
-    return _set_kimi_k3_batch_invariant(rl_grpo_kimi_k3_debug_varlen(seq_len=seq_len))
+    config = _set_kimi_k3_batch_invariant(_kimi_k3_debug_varlen_config(seq_len=seq_len))
+
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Local compile regions do not support batch-invariant mode.
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
 
 
 def _configure_ci(
@@ -798,7 +861,7 @@ def rl_grpo_fsdp2_gen_tp2_compile() -> Controller.Config:
 
 
 def rl_grpo_moe_debug_tp4_ep4() -> Controller.Config:
-    config = rl_grpo_gpt_oss_debug_varlen_no_compile(seq_len=1024)
+    config = _gpt_oss_debug_varlen_config(seq_len=1024)
     config.trainer.parallelism.data_parallel_shard_degree = 1
     config.trainer.parallelism.tensor_parallel_degree = 4
     config.trainer.parallelism.expert_parallel_degree = 4
@@ -812,22 +875,26 @@ def rl_grpo_moe_debug_tp4_ep4() -> Controller.Config:
         "debugmodel",
         seq_len=1024,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=config.trainer.parallelism,
         generator_parallelism=config.generator.parallelism,
     )
-    for model_config in (config.trainer.model, config.generator.model):
-        model_config.local_compile_regions = []
     # TODO: use FULL CUDA graphs once GPT-OSS CI enables a
     # CUDA-graph-compatible distributed MoE token dispatcher.
     config.generator.cuda_graph.mode = "NONE"
-    return _configure_ci(
+    config = _configure_ci(
         config,
         steps=5,
         num_tokens_per_microbatch=2048,
         max_generated_tokens=256,
         use_hf_assets_from_env=False,
     )
+
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    # Clear regions after the LM head transform adds fp32_to_bf16_split.
+    for model_config in (config.trainer.model, config.generator.model):
+        model_config.local_compile_regions = []
+    return config
 
 
 def rl_grpo_checkpoint_save() -> Controller.Config:
@@ -933,7 +1000,7 @@ def rl_grpo_moe_debug_dist_moe_tp2_ep4() -> Controller.Config:
     from torchtitan.distributed.activation_checkpoint import RegionAC
     from torchtitan.models.common.dist_moe import DistMoeRuntime
 
-    config = rl_grpo_qwen3_moe_debug_varlen()
+    config = _qwen3_moe_debug_varlen_config()
     # Full activation checkpointing would replay dist_moe's forward in backward and
     # corrupt its activation planner; RegionAC with no saved regions does not.
     config.trainer.activation_checkpoint = RegionAC.Config(save_regions=[])
@@ -951,6 +1018,10 @@ def rl_grpo_moe_debug_dist_moe_tp2_ep4() -> Controller.Config:
         max_generated_tokens=128,
         use_hf_assets_from_env=False,
     )
-    config.trainer = apply_transforms(config.trainer, [DistMoeTransform()])
-    config.generator = apply_transforms(config.generator, [DistMoeTransform()])
+    config.trainer = apply_transforms(
+        config.trainer, [LMHeadFP32OutputTransform(), DistMoeTransform()]
+    )
+    config.generator = apply_transforms(
+        config.generator, [LMHeadFP32OutputTransform(), DistMoeTransform()]
+    )
     return config

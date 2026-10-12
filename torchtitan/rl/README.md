@@ -126,6 +126,9 @@ That's it. Wire the rollouter into a recipe function:
 
 ```python
 # my_project/my_experiment/recipe module
+from torchtitan.config.transform import apply_transforms, LMHeadFP32OutputTransform
+
+
 def my_experiment() -> Controller.Config:
     trainer_parallelism = ParallelismConfig(tensor_parallel_degree=2)
     generator_parallelism = InferenceParallelismConfig(tensor_parallel_degree=4)
@@ -135,7 +138,7 @@ def my_experiment() -> Controller.Config:
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         rollouter=rollouter,
         renderer=from_renderers(Qwen3RendererConfig(enable_thinking=False)),
         trainer=Trainer.Config(
@@ -145,14 +148,29 @@ def my_experiment() -> Controller.Config:
             model=generator_model, parallelism=generator_parallelism, ...
         ),
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
 ```
 
 The trainer and generator each own a model config, built and sharded for that
 role's parallelism. They must use the same model class; keeping them otherwise
 aligned (same architecture, same weights layout) is the recipe's job, and
-`build_rl_model_configs` builds both from one call. Per-role differences, such
-as a CUDA-graph-compatible MoE dispatcher for the generator, are model config
-transforms applied to one role (`apply_transforms(config.generator, ...)`).
+`build_rl_model_configs` builds both for their respective parallelisms and does
+not apply transforms. Set each role's options, then call `apply_transforms` once
+per role with its complete transform list.
+
+RL log-probability and KL calculations need the LM head logits in fp32. Include
+`LMHeadFP32OutputTransform` on both the trainer and generator so both roles
+produce fp32 logits. The transform uses `HiMidLoLinear` to preserve the fp32
+output of the vocabulary projection; casting already-rounded bf16 logits to
+fp32 cannot recover the lost precision. Include any role-specific transforms,
+such as a CUDA-graph-compatible MoE dispatcher, in the same transform list.
+
+Local compile regions do not support batch-invariant mode. Recipes using that
+mode, or otherwise disabling local compilation, clear
+`model.local_compile_regions` after applying the LM head transform, which adds
+`fp32_to_bf16_split` to that list.
 `Controller.Config.override` applies registered overrides to both models.
 
 Then run it by module and config name. `--output-dir` sets the output directory:

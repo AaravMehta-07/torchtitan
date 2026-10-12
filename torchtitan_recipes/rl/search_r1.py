@@ -33,7 +33,7 @@ from torchtitan.config import OverrideConfig, TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.config.transform import (
     apply_transforms,
-    LMHeadFP32OutputConverter,
+    LMHeadFP32OutputTransform,
     TokenDispatcherTransform,
 )
 from torchtitan.distributed.activation_checkpoint import FullAC
@@ -91,13 +91,8 @@ def _search_r1_rollouter_config() -> Rollouter.Config:
     )
 
 
-def rl_grpo_qwen3_1_7b_search_r1() -> Controller.Config:
-    """GRPO Search-R1 (multi-turn retrieval QA) for Qwen3-1.7B.
-
-    Runs on 8 GPUs: 4 generator (TP=4) + 1 trainer (TP=1), with a dense retrieval
-    server on the spare GPUs. Requires a running retrieval server and the QA parquet
-    data; see ``README.md``.
-    """
+def _qwen3_1_7b_search_r1_config() -> Controller.Config:
+    """Build the base controller config before applying recipe transforms."""
     seq_len = 4096
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=1,
@@ -112,7 +107,6 @@ def rl_grpo_qwen3_1_7b_search_r1() -> Controller.Config:
         "1.7B",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
@@ -176,6 +170,19 @@ def rl_grpo_qwen3_1_7b_search_r1() -> Controller.Config:
     )
 
 
+def rl_grpo_qwen3_1_7b_search_r1() -> Controller.Config:
+    """GRPO Search-R1 (multi-turn retrieval QA) for Qwen3-1.7B.
+
+    Runs on 8 GPUs: 4 generator (TP=4) + 1 trainer (TP=1), with a dense retrieval
+    server on the spare GPUs. Requires a running retrieval server and the QA parquet
+    data; see ``README.md``.
+    """
+    config = _qwen3_1_7b_search_r1_config()
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
+
 def rl_grpo_qwen3_8b_search_r1() -> Controller.Config:
     """GRPO Search-R1 for Qwen3-8B — same recipe as the 1.7B config.
 
@@ -184,7 +191,7 @@ def rl_grpo_qwen3_8b_search_r1() -> Controller.Config:
     """
     # TODO: use mixed precision (fp32 master + bf16 compute) via FSDP + activation
     # checkpointing, which is more memory-efficient and could keep the split generator-heavy.
-    config = rl_grpo_qwen3_1_7b_search_r1()
+    config = _qwen3_1_7b_search_r1_config()
     config.hf_assets_path = "./assets/hf/Qwen3-8B"
     trainer_parallelism = dataclasses.replace(
         config.trainer.parallelism, tensor_parallel_degree=4
@@ -197,7 +204,6 @@ def rl_grpo_qwen3_8b_search_r1() -> Controller.Config:
         "8B",
         seq_len=config.trainer.training.max_context_length,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
@@ -226,6 +232,8 @@ def rl_grpo_qwen3_8b_search_r1() -> Controller.Config:
         gpu_memory_limit=0.6,
         parallelism=generator_parallelism,
     )
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
     return config
 
 
@@ -257,7 +265,6 @@ def rl_grpo_qwen3_30b_a3b_deepep_search_r1_perf() -> Controller.Config:
         "30B-A3B",
         seq_len=seq_len,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
@@ -320,6 +327,7 @@ def rl_grpo_qwen3_30b_a3b_deepep_search_r1_perf() -> Controller.Config:
     config.trainer = apply_transforms(
         config.trainer,
         [
+            LMHeadFP32OutputTransform(),
             TokenDispatcherTransform(
                 dispatcher=DeepEPTokenDispatcher,
                 # Each EP rank dispatches one CP x TP shard of a microbatch.
@@ -330,7 +338,7 @@ def rl_grpo_qwen3_30b_a3b_deepep_search_r1_perf() -> Controller.Config:
                         * config.trainer.parallelism.tensor_parallel_degree
                     )
                 ),
-            )
+            ),
         ],
     )
     # The generator captures CUDA graphs, so it needs DeepEP's static,
@@ -338,6 +346,7 @@ def rl_grpo_qwen3_30b_a3b_deepep_search_r1_perf() -> Controller.Config:
     config.generator = apply_transforms(
         config.generator,
         [
+            LMHeadFP32OutputTransform(),
             TokenDispatcherTransform(
                 dispatcher=DeepEPTokenDispatcher,
                 # vLLM shards each engine step's token budget across TP ranks.
@@ -346,7 +355,7 @@ def rl_grpo_qwen3_30b_a3b_deepep_search_r1_perf() -> Controller.Config:
                     // config.generator.parallelism.tensor_parallel_degree
                 ),
                 kwargs={"cuda_graph_compatible": True},
-            )
+            ),
         ],
     )
     return config
@@ -374,9 +383,10 @@ def rl_grpo_muse_glimmer_30b_search_r1() -> Controller.Config:
     on load, and the renderer handles Muse Glimmer's harmony chat
     format and ATEM tool calls.
     """
-    # TODO: this head computes bf16 logits. LMHeadFP32OutputConverter can't convert a
-    # SoftCappedLinear (it raises on the extra fields), so this config doesn't apply it; it needs
-    # a HiMidLoLinear-based variant with the soft cap.
+    # TODO: SoftCappedLinear rounds the GEMM output to bf16 before the fp32
+    # soft cap. This recipe skips LMHeadFP32OutputTransform because converting
+    # the specialized head to HiMidLoLinear would lose its computation. An
+    # fp32-output variant must preserve the output multiplier and soft cap.
     trainer_parallelism = ParallelismConfig(
         data_parallel_shard_degree=3,
         tensor_parallel_degree=2,

@@ -26,7 +26,12 @@ def build_rl_model_configs(
 
     Both come from the same ``build_model_config(flavor, **kwargs)`` call, so
     they share the architecture; each is sharded for its own role's
-    parallelism. Changes made to one afterwards must be made to the other.
+    parallelism. Apply each role's complete transform list in the recipe after
+    setting its options. Changes made to one model must be made to the other.
+
+    RL logprob / KL math needs fp32 lm_head logits. Recipes apply
+    ``LMHeadFP32OutputTransform`` to both roles to preserve that precision in
+    the vocabulary projection; this helper only builds the model configs.
     """
     return (
         build_model_config(flavor, parallelism=trainer_parallelism, **kwargs),

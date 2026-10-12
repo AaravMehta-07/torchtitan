@@ -29,7 +29,7 @@ from torchtitan.components.optim import (
 from torchtitan.components.renderer import from_renderers
 from torchtitan.config import TrainingConfig
 from torchtitan.config.parallelism import ParallelismConfig
-from torchtitan.config.transform import LMHeadFP32OutputConverter
+from torchtitan.config.transform import apply_transforms, LMHeadFP32OutputTransform
 from torchtitan.distributed.activation_checkpoint import FullAC
 from torchtitan.models.common.config_utils import decoder_vocab_size
 from torchtitan.models.qwen3_5 import build_model_config
@@ -176,11 +176,10 @@ def rl_grpo_qwen35_9b_terminal_bench() -> Controller.Config:
         "9B",
         seq_len=max_context_length,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3.5-9B",
         dump_folder="outputs/rl/qwen35_9b_terminal_bench",
         rollout_recorder=RolloutSampleRecorder.Config(
@@ -267,6 +266,10 @@ def rl_grpo_qwen35_9b_terminal_bench() -> Controller.Config:
         ),
     )
 
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config
+
 
 def rl_grpo_qwen35_35b_a3b_terminal_bench() -> Controller.Config:
     """Qwen3.5-35B-A3B: train on TMax (``local/tmax@v1``), validate on Terminal-Bench 2.1.
@@ -320,11 +323,10 @@ def rl_grpo_qwen35_35b_a3b_terminal_bench() -> Controller.Config:
         "35B-A3B",
         seq_len=max_context_length,
         attn_backend="varlen",
-        converters=[LMHeadFP32OutputConverter.Config()],
         trainer_parallelism=trainer_parallelism,
         generator_parallelism=generator_parallelism,
     )
-    return Controller.Config(
+    config = Controller.Config(
         hf_assets_path="./assets/hf/Qwen3.5-35B-A3B",
         dump_folder="outputs/rl/qwen35_35b_a3b_terminal_bench",
         rollout_recorder=RolloutSampleRecorder.Config(
@@ -410,3 +412,7 @@ def rl_grpo_qwen35_35b_a3b_terminal_bench() -> Controller.Config:
             ),
         ),
     )
+
+    config.trainer = apply_transforms(config.trainer, [LMHeadFP32OutputTransform()])
+    config.generator = apply_transforms(config.generator, [LMHeadFP32OutputTransform()])
+    return config

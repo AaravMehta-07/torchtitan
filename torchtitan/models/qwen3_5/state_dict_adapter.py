@@ -291,7 +291,7 @@ class Qwen35StateDictAdapter(StateDictAdapter):
                     == f"{self.hf_language_model_prefix}.layers.{{}}.linear_attn.in_proj_qkv.weight"
                 ):
                     # pyrefly: ignore [missing-attribute]
-                    dn = self.model_config.layers[int(idx)].delta_net
+                    dn = self.model_config.layers[int(idx)].attention
                     kd = dn.in_proj_q.out_features
                     vd = dn.in_proj_v.out_features
                     q, k, v = value.split([kd, kd, vd], dim=0)
@@ -306,7 +306,7 @@ class Qwen35StateDictAdapter(StateDictAdapter):
                     == f"{self.hf_language_model_prefix}.layers.{{}}.linear_attn.conv1d.weight"
                 ):
                     # pyrefly: ignore [missing-attribute]
-                    dn = self.model_config.layers[int(idx)].delta_net
+                    dn = self.model_config.layers[int(idx)].attention
                     kd = dn.in_proj_q.out_features
                     vd = dn.in_proj_v.out_features
                     cq, ck, cv = value.split([kd, kd, vd], dim=0)

@@ -11,7 +11,7 @@ from typing import Any
 
 from torchtitan.config.parallelism import ParallelismConfig
 from torchtitan.models.common.decoder import Decoder
-from torchtitan.rl.distributed.parallelism import InferenceParallelismConfig
+from torchtitan.rl.generator.parallelism import InferenceParallelismConfig
 
 
 def build_rl_model_configs(

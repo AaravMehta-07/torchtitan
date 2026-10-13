@@ -53,7 +53,7 @@ def _require_dist_moe() -> ModuleType:
 
 def _dist_moe_runtime_config(*, scratch_capacity_factor: float) -> Configurable.Config:
     """Build the rank-wide activation and scratch policy for Dist-MoE."""
-    from torchtitan.models.common.moe.dist_moe.runtime import DistMoeRuntime
+    from torchtitan.models.common.dist_moe.runtime import DistMoeRuntime
 
     return DistMoeRuntime.Config(
         activation_slot_capacity_factor=1.0,

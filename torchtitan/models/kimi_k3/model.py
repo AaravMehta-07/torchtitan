@@ -235,8 +235,7 @@ class KimiK3TransformerBlock(Module):
         layer_id: int
         attn_res_block_size: int
         attention: KimiMLAAttention.Config | KDA.Config
-        feed_forward: FeedForward.Config | None
-        moe: KimiLatentMoE.Config | None
+        feed_forward: FeedForward.Config | KimiLatentMoE.Config
         attention_norm: RMSNorm.Config
         ffn_norm: RMSNorm.Config
         attention_res_norm: RMSNorm.Config | None
@@ -247,18 +246,12 @@ class KimiK3TransformerBlock(Module):
 
     def __init__(self, config: Config):
         super().__init__()
-        if (config.feed_forward is None) == (config.moe is None):
-            raise ValueError("Exactly one of feed_forward or moe must be configured.")
         self.layer_id = config.layer_id
         self.attn_res_block_size = config.attn_res_block_size
         # A block's first layer closes the previous block and joins the stack.
         self.first_layer_in_block = self.layer_id % self.attn_res_block_size == 0
         self.attention = config.attention.build()
-        self.feed_forward = (
-            config.feed_forward.build() if config.feed_forward is not None else None
-        )
-        self.moe = config.moe.build() if config.moe is not None else None
-        self.moe_enabled = self.moe is not None
+        self.feed_forward = config.feed_forward.build()
         self.attention_norm = config.attention_norm.build()
         self.ffn_norm = config.ffn_norm.build()
         self.attention_res_norm = (
@@ -316,14 +309,13 @@ class KimiK3TransformerBlock(Module):
             self.ffn_res_norm,
         )
         h_TD = self.ffn_norm(h_TD)
-        if self.moe is not None:
-            h_TD = self.moe(
+        if isinstance(self.feed_forward, KimiLatentMoE):
+            h_TD = self.feed_forward(
                 h_TD,
                 padding_mask_T=padding_mask,
                 aux_loss_denominator=aux_loss_denominator,
             )
         else:
-            assert self.feed_forward is not None
             h_TD = self.feed_forward(h_TD)
         # Trailing add, always saved: it saves nothing for backward, so replay skips
         # it and its inputs need no persisting, matching checkpoint early stop.

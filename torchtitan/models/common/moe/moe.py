@@ -926,6 +926,15 @@ class MoE(Module):
                 )
 
 
+def get_moe(module: nn.Module) -> MoE | None:
+    """Return a block's MoE from its feed_forward or moe field, if present."""
+    for name in ("feed_forward", "moe"):
+        child = getattr(module, name, None)
+        if isinstance(child, MoE):
+            return child
+    return None
+
+
 class _MoERouterLike(Protocol):
     tokens_per_expert_E: torch.Tensor  # noqa: N815
 
@@ -968,8 +977,8 @@ def register_moe_load_balancing_hook(
             for layers in layer_containers:
                 assert isinstance(layers, (nn.ModuleDict, nn.ModuleList))
                 for transformer_block in layers.children():
-                    if getattr(transformer_block, "moe_enabled", False):
-                        yield transformer_block, cast(_MoELike, transformer_block.moe)
+                    if (moe := get_moe(transformer_block)) is not None:
+                        yield transformer_block, cast(_MoELike, moe)
 
     def _should_register_moe_balancing_hook(model_parts: list[nn.Module]) -> bool:
         moe_layers = list(_iter_moe_layers(model_parts))

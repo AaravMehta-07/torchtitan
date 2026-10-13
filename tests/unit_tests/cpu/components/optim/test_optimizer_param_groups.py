@@ -19,7 +19,7 @@ from torchtitan.components.optim import (
     LRSchedulersContainer,
     OptimizersContainer,
 )
-from torchtitan.models.common.moe import register_moe_load_balancing_hook
+from torchtitan.models.common.moe import MoE, register_moe_load_balancing_hook
 
 
 class SimpleModel(nn.Module):
@@ -55,9 +55,9 @@ class FakeRouter(nn.Module):
         self.register_buffer("tokens_per_expert_E", torch.tensor(tokens))
 
 
-class FakeMoE(nn.Module):
+class FakeMoE(MoE):
     def __init__(self, load_balance_coeff, tokens):
-        super().__init__()
+        nn.Module.__init__(self)
         self.load_balance_coeff = load_balance_coeff
         self.router = FakeRouter(tokens)
         if load_balance_coeff is not None:
@@ -69,7 +69,6 @@ class FakeMoE(nn.Module):
 class FakeMoEBlock(nn.Module):
     def __init__(self, load_balance_coeff, tokens):
         super().__init__()
-        self.moe_enabled = True
         self.moe = FakeMoE(load_balance_coeff, tokens)
 
 
@@ -195,6 +194,8 @@ class TestOptimizerConfig(unittest.TestCase):
 
     def test_moe_load_balancing_updates_all_enabled_layers(self):
         model = FakeMoEModel()
+        model.layers["0"].feed_forward = model.layers["0"].moe
+        del model.layers["0"].moe
         config = OptimizersContainer.Config(
             optimizers=[
                 AdamW.Config(pattern=r".*", fused=False, lr=0.0, weight_decay=0.0),
@@ -210,7 +211,7 @@ class TestOptimizerConfig(unittest.TestCase):
         container.step()
 
         torch.testing.assert_close(
-            model.layers["0"].moe.expert_bias_E,
+            model.layers["0"].feed_forward.expert_bias_E,
             torch.tensor([-0.1, 0.1]),
         )
         torch.testing.assert_close(
@@ -218,7 +219,7 @@ class TestOptimizerConfig(unittest.TestCase):
             torch.tensor([0.2, -0.2]),
         )
         torch.testing.assert_close(
-            model.layers["0"].moe.router.tokens_per_expert_E,
+            model.layers["0"].feed_forward.router.tokens_per_expert_E,
             torch.tensor([0, 0]),
         )
         torch.testing.assert_close(

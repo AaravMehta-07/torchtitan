@@ -253,17 +253,7 @@ class KimiK3TransformerBlock(Module):
         self.attn_res_block_size = config.attn_res_block_size
         # A block's first layer closes the previous block and joins the stack.
         self.first_layer_in_block = self.layer_id % self.attn_res_block_size == 0
-        # Preserve module paths used by checkpoints and optimizer parameter groups.
-        self.attention = (
-            config.attention.build()
-            if isinstance(config.attention, KimiMLAAttention.Config)
-            else None
-        )
-        self.delta_attention = (
-            config.attention.build()
-            if isinstance(config.attention, KDA.Config)
-            else None
-        )
+        self.attention = config.attention.build()
         self.feed_forward = (
             config.feed_forward.build() if config.feed_forward is not None else None
         )
@@ -314,11 +304,7 @@ class KimiK3TransformerBlock(Module):
                 self.attention_res_norm,
             )
         h_TD = self.attention_norm(h_TD)
-        if self.attention is not None:
-            h_TD = self.attention(h_TD, attention_metadata, positions)
-        else:
-            assert self.delta_attention is not None
-            h_TD = self.delta_attention(h_TD, attention_metadata, positions)
+        h_TD = self.attention(h_TD, attention_metadata, positions)
         # The residual add reads the attention output with bare ops.
         remat.recompute_needs_tensor(h_TD)
         prefix_sum_TD = h_TD if self.first_layer_in_block else x_TD + h_TD
@@ -646,17 +632,11 @@ class KimiK3Model(MultimodalModel):
             )
         for layer in self.layers.values():
             block = cast(KimiK3TransformerBlock, layer)
-            attention = (
-                block.attention
-                if block.attention is not None
-                else block.delta_attention
-            )
-            assert attention is not None
-            h_TD, block_residual_TND = layer(
+            h_TD, block_residual_TND = block(
                 h_TD,
                 block_residual_TND,
                 (
-                    attention_metadata[type(attention.inner_attention)]
+                    attention_metadata[type(block.attention.inner_attention)]
                     if attention_metadata is not None
                     else None
                 ),

@@ -78,14 +78,14 @@ def test_hybrid_layers_have_one_attention_config(model):
         )
         assert not hasattr(layer, "delta_net")
         assert not hasattr(layer, "delta_attention")
-    assert isinstance(config.first_attention, BaseAttention.Config)
+    assert isinstance(config.first_base_attention, BaseAttention.Config)
     config.layers = [
         layer
         for layer in config.layers
         if not isinstance(layer.attention, BaseAttention.Config)
     ]
     assert config.layers
-    assert config.first_attention is None
+    assert config.first_base_attention is None
 
 
 class _ReplaceRootConverter(ModelConfigConverter):

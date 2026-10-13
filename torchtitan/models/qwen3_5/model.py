@@ -237,7 +237,7 @@ class Qwen35TransformerBlock(Module):
     def __init__(self, config: Config):
         super().__init__()
         self.full_attn = isinstance(config.attention, Qwen35Attention.Config)
-        self.attn = config.attention.build()
+        self.attention = config.attention.build()
 
         self.moe_enabled = config.moe is not None
         if self.moe_enabled:
@@ -261,9 +261,9 @@ class Qwen35TransformerBlock(Module):
     ) -> torch.Tensor:
         h_TD = self.attention_norm(x_TD)
         if self.full_attn:
-            h_TD = self.attn(h_TD, attention_metadata, positions)
+            h_TD = self.attention(h_TD, attention_metadata, positions)
         else:
-            h_TD = self.attn(h_TD, attention_metadata)
+            h_TD = self.attention(h_TD, attention_metadata)
         # The residual add reads the attention output with bare ops.
         remat.recompute_needs_tensor(h_TD)
         x_TD = x_TD + h_TD
@@ -732,7 +732,11 @@ class Qwen35Model(MultimodalModel):
                 x,
                 (
                     attention_metadata.get(
-                        type(cast(Qwen35TransformerBlock, layer).attn.inner_attention)
+                        type(
+                            cast(
+                                Qwen35TransformerBlock, layer
+                            ).attention.inner_attention
+                        )
                     )
                     if attention_metadata is not None
                     else None

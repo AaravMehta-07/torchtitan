@@ -101,20 +101,20 @@ class KimiK3StateDictAdapter(MoEStateDictAdapter):
             "language_model.model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.wo.weight",
         }
         self.kda_from_hf_map = {
-            "language_model.model.layers.{}.self_attn.q_proj.weight": "layers.{}.delta_attention.q_proj.weight",
-            "language_model.model.layers.{}.self_attn.k_proj.weight": "layers.{}.delta_attention.k_proj.weight",
-            "language_model.model.layers.{}.self_attn.v_proj.weight": "layers.{}.delta_attention.v_proj.weight",
-            "language_model.model.layers.{}.self_attn.q_conv1d.weight": "layers.{}.delta_attention.q_conv.weight",
-            "language_model.model.layers.{}.self_attn.k_conv1d.weight": "layers.{}.delta_attention.k_conv.weight",
-            "language_model.model.layers.{}.self_attn.v_conv1d.weight": "layers.{}.delta_attention.v_conv.weight",
-            "language_model.model.layers.{}.self_attn.f_a_proj.weight": "layers.{}.delta_attention.forget_a.weight",
-            "language_model.model.layers.{}.self_attn.f_b_proj.weight": "layers.{}.delta_attention.forget_b.weight",
-            "language_model.model.layers.{}.self_attn.b_proj.weight": "layers.{}.delta_attention.beta.weight",
-            "language_model.model.layers.{}.self_attn.g_proj.weight": "layers.{}.delta_attention.output_gate.weight",
-            "language_model.model.layers.{}.self_attn.o_norm.weight": "layers.{}.delta_attention.output_norm.weight",
-            "language_model.model.layers.{}.self_attn.o_proj.weight": "layers.{}.delta_attention.output_proj.weight",
-            "language_model.model.layers.{}.self_attn.A_log": "layers.{}.delta_attention.A_log",
-            "language_model.model.layers.{}.self_attn.dt_bias": "layers.{}.delta_attention.dt_bias",
+            "language_model.model.layers.{}.self_attn.q_proj.weight": "layers.{}.attention.q_proj.weight",
+            "language_model.model.layers.{}.self_attn.k_proj.weight": "layers.{}.attention.k_proj.weight",
+            "language_model.model.layers.{}.self_attn.v_proj.weight": "layers.{}.attention.v_proj.weight",
+            "language_model.model.layers.{}.self_attn.q_conv1d.weight": "layers.{}.attention.q_conv.weight",
+            "language_model.model.layers.{}.self_attn.k_conv1d.weight": "layers.{}.attention.k_conv.weight",
+            "language_model.model.layers.{}.self_attn.v_conv1d.weight": "layers.{}.attention.v_conv.weight",
+            "language_model.model.layers.{}.self_attn.f_a_proj.weight": "layers.{}.attention.forget_a.weight",
+            "language_model.model.layers.{}.self_attn.f_b_proj.weight": "layers.{}.attention.forget_b.weight",
+            "language_model.model.layers.{}.self_attn.b_proj.weight": "layers.{}.attention.beta.weight",
+            "language_model.model.layers.{}.self_attn.g_proj.weight": "layers.{}.attention.output_gate.weight",
+            "language_model.model.layers.{}.self_attn.o_norm.weight": "layers.{}.attention.output_norm.weight",
+            "language_model.model.layers.{}.self_attn.o_proj.weight": "layers.{}.attention.output_proj.weight",
+            "language_model.model.layers.{}.self_attn.A_log": "layers.{}.attention.A_log",
+            "language_model.model.layers.{}.self_attn.dt_bias": "layers.{}.attention.dt_bias",
         }
 
         # The released index contains MXFP4 packed/scale FQNs, while this
@@ -217,7 +217,7 @@ class KimiK3StateDictAdapter(MoEStateDictAdapter):
                 if hf_abstract_key is None:
                     unmapped.append(key)
                     continue
-                if abstract_key == "layers.{}.delta_attention.dt_bias":
+                if abstract_key == "layers.{}.attention.dt_bias":
                     value = value.reshape(-1)
                 hf_state_dict[hf_abstract_key.format(layer_num)] = value
                 continue
@@ -360,7 +360,7 @@ class KimiK3StateDictAdapter(MoEStateDictAdapter):
                 if new_abstract_key is None:
                     unmapped.append(key)
                     continue
-                if new_abstract_key == "layers.{}.delta_attention.dt_bias":
+                if new_abstract_key == "layers.{}.attention.dt_bias":
                     delta_config = self.kimi_config.layers[int(layer_num)].attention
                     if not isinstance(delta_config, KDA.Config):
                         raise ValueError(f"HF key '{key}' targets a non-KDA layer.")

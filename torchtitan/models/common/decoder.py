@@ -88,8 +88,8 @@ class Decoder(BaseModel):
         enable_weight_tying: bool = False
 
         @property
-        def first_attention(self) -> BaseAttention.Config | None:
-            """First full or sliding-window attention config, skipping linear layers."""
+        def first_base_attention(self) -> BaseAttention.Config | None:
+            """First ``BaseAttention`` config, else ``None``."""
             return next(
                 (
                     layer.attention
@@ -159,7 +159,7 @@ class Decoder(BaseModel):
         from torchtitan.distributed.spmd_types import spmd_mesh_size, spmd_sparse_mesh
 
         tp = spmd_mesh_size("tp")
-        attention = config.first_attention
+        attention = config.first_base_attention
         if tp > 1 and attention is not None:
             num_heads = attention.n_heads
             num_kv_heads = getattr(attention, "n_kv_heads", None) or num_heads
@@ -339,12 +339,14 @@ class Decoder(BaseModel):
                         InnerAttention.Config, layer.attention.inner_attention
                     ).is_full_attention
                 ),
-                self.config.first_attention,
+                self.config.first_base_attention,
             )
             if attention is not None:
-                selected_attention_metadata = attention_metadata.get(
-                    attention.inner_attention._owner
+                cp_inner_attention = attention.inner_attention._owner
+                assert cp_inner_attention is not None and issubclass(
+                    cp_inner_attention, CPInnerAttention
                 )
+                selected_attention_metadata = attention_metadata.get(cp_inner_attention)
         load_balancer = (
             # TODO: `attention_metadata` alone cannot determine the load-balancing strategy.
             load_balancer_config.build(

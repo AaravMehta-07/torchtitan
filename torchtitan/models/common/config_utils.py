@@ -39,13 +39,13 @@ from torchtitan.models.common.decoder_sharding import (
     stacked_colwise_sharding_config,
 )
 from torchtitan.models.common.feed_forward import FeedForward
-from torchtitan.models.common.hi_mid_lo_linear import HiMidLoLinear
 from torchtitan.models.common.linear import (
     ColumnParallelLinear,
     GroupedLinear,
     Linear,
     RowParallelLinear,
 )
+from torchtitan.models.common.linear.hi_mid_lo_linear import HiMidLoLinear
 from torchtitan.models.common.moe import (
     BatchWiseLoadBalanceLoss,
     MicrobatchWiseLoadBalanceLoss,
@@ -53,7 +53,7 @@ from torchtitan.models.common.moe import (
     RoutedExperts,
     TokenChoiceTopKRouter,
 )
-from torchtitan.models.common.moe_sharding import (
+from torchtitan.models.common.moe.sharding import (
     moe_sharding_config,
     routed_expert_linear_sharding_config,
     routed_experts_sharding_config,
@@ -63,9 +63,9 @@ from torchtitan.models.common.moe_sharding import (
     shared_experts_output_placement,
     shared_experts_sharding_config,
 )
+from torchtitan.models.common.moe.token_dispatcher import AllToAllTokenDispatcher
 from torchtitan.models.common.nn_modules import RMSNorm
 from torchtitan.models.common.rope import RoPE
-from torchtitan.models.common.token_dispatcher import AllToAllTokenDispatcher
 
 
 DEFAULT_DEBUG_MODEL_SEQ_LEN = 2048
